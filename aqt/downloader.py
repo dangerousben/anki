@@ -28,7 +28,7 @@ def download(mw, code):
             # unsure why this is happening, but guard against throwing the
             # error
             pass
-    mw.connect(thread, SIGNAL("recv"), onRecv)
+    thread.recv.connect(onRecv)
     thread.start()
     mw.progress.start(immediate=True)
     while not thread.isFinished():
@@ -59,7 +59,7 @@ class Downloader(QThread):
         def recvEvent(bytes):
             self.recvTotal += bytes
             if canPost():
-                self.emit(SIGNAL("recv"))
+                self.recv.emit()
         addHook("httpRecv", recvEvent)
         con =  httpCon()
         try:

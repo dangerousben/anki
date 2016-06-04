@@ -46,7 +46,11 @@ class SyncManager(QObject):
         t = self.thread = SyncThread(
             self.pm.collectionPath(), self.pm.profile['syncKey'],
             auth=auth, media=self.pm.profile['syncMedia'])
-        self.connect(t, SIGNAL("event"), self.onEvent)
+        t.event.connect(self.onEvent)
+        t.sync.connect(self.onSync)
+        t.syncMessage.connect(self.onSyncMessage)
+        t.send.connect(self.onSend)
+        t.recv.connect(self.onRecv)
         self.label = _("Connecting...")
         self.mw.progress.start(immediate=True, label=self.label)
         self.sentBytes = self.recvBytes = 0
@@ -97,32 +101,6 @@ automatically."""))
         elif evt == "upbad":
             self._didFullUp = False
             self._checkFailed()
-        elif evt == "sync":
-            m = None; t = args[0]
-            if t == "login":
-                m = _("Syncing...")
-            elif t == "upload":
-                self._didFullUp = True
-                m = _("Uploading to AnkiWeb...")
-            elif t == "download":
-                m = _("Downloading from AnkiWeb...")
-            elif t == "sanity":
-                m = _("Checking...")
-            elif t == "findMedia":
-                m = _("Syncing Media...")
-            elif t == "upgradeRequired":
-                showText(_("""\
-Please visit AnkiWeb, upgrade your deck, then try again."""))
-            if m:
-                self.label = m
-                self._updateLabel()
-        elif evt == "syncMsg":
-            self.label = args[0]
-            self._updateLabel()
-        elif evt == "error":
-            self._didError = True
-            showText(_("Syncing failed:\n%s")%
-                     self._rewriteError(args[0]))
         elif evt == "clockOff":
             self._clockOff()
         elif evt == "checkFailed":
@@ -135,13 +113,43 @@ sync again to correct the issue."""))
             pass
         elif evt == "fullSync":
             self._confirmFullSync()
-        elif evt == "send":
-            # posted events not guaranteed to arrive in order
-            self.sentBytes = max(self.sentBytes, args[0])
+
+    def onSync(self, t):
+        m = None
+        if t == "login":
+            m = _("Syncing...")
+        elif t == "upload":
+            self._didFullUp = True
+            m = _("Uploading to AnkiWeb...")
+        elif t == "download":
+            m = _("Downloading from AnkiWeb...")
+        elif t == "sanity":
+            m = _("Checking...")
+        elif t == "findMedia":
+            m = _("Syncing Media...")
+        elif t == "upgradeRequired":
+            showText(_("""\
+Please visit AnkiWeb, upgrade your deck, then try again."""))
+        if m:
+            self.label = m
             self._updateLabel()
-        elif evt == "recv":
-            self.recvBytes = max(self.recvBytes, args[0])
-            self._updateLabel()
+
+    def onSyncMessage(label):
+        self.label = label
+        self._updateLabel()
+
+    def onError(msg):
+        self._didError = True
+        showText(_("Syncing failed:\n%s")% self._rewriteError(msg))
+
+    def onSend(total):
+        # posted events not guaranteed to arrive in order
+        self.sentBytes = max(self.sentBytes, total)
+        self._updateLabel()
+
+    def onRecv(total):
+        self.recvBytes = max(self.recvBytes, total)
+        self._updateLabel()
 
     def _rewriteError(self, err):
         if "Errno 61" in err:
@@ -217,8 +225,8 @@ enter your details below.""") %
         vbox.addLayout(g)
         bb = QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setAutoDefault(True)
-        self.connect(bb, SIGNAL("accepted()"), d.accept)
-        self.connect(bb, SIGNAL("rejected()"), d.reject)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
         vbox.addWidget(bb)
         d.setLayout(vbox)
         d.show()
@@ -276,6 +284,12 @@ Check Database, then sync again."""))
 
 class SyncThread(QThread):
 
+    event = pyqtSignal()
+    sync = pyqtSignal(str)
+    syncMessage = pyqtSignal(str)
+    send = pyqtSignal(int)
+    recv = pyqtSignal(int)
+
     def __init__(self, path, hkey, auth=None, media=True):
         QThread.__init__(self)
         self.path = path
@@ -300,9 +314,9 @@ class SyncThread(QThread):
         # throttle updates; qt doesn't handle lots of posted events well
         self.byteUpdate = time.time()
         def syncEvent(type):
-            self.fireEvent("sync", type)
+            self.sync.emit(type)
         def syncMsg(msg):
-            self.fireEvent("syncMsg", msg)
+            self.syncMessage.emit(msg)
         def canPost():
             if (time.time() - self.byteUpdate) > 0.1:
                 self.byteUpdate = time.time()
@@ -310,11 +324,11 @@ class SyncThread(QThread):
         def sendEvent(bytes):
             self.sentTotal += bytes
             if canPost():
-                self.fireEvent("send", self.sentTotal)
+                self.send.emit(self.sentTotal)
         def recvEvent(bytes):
             self.recvTotal += bytes
             if canPost():
-                self.fireEvent("recv", self.recvTotal)
+                self.recv.emit(self.recvTotal)
         addHook("sync", syncEvent)
         addHook("syncMsg", syncMsg)
         addHook("httpSend", sendEvent)
@@ -422,7 +436,7 @@ class SyncThread(QThread):
             self.fireEvent("mediaSuccess")
 
     def fireEvent(self, *args):
-        self.emit(SIGNAL("event"), *args)
+        self.event.emit(*args)
 
 
 # Monkey-patch httplib & httplib2 so we can get progress info
